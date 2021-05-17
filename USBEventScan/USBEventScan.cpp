@@ -11,7 +11,7 @@ using namespace std;
 
 #pragma comment(lib, "wbemuuid.lib")
 
-unsigned int POLLING_RATE = 1000; // in ms 
+unsigned int POLLING_RATE = 250; // in ms 
 HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE); // Allows us to pick output colors
 short GREEN = 2;
 short RED   = 4;
@@ -215,7 +215,6 @@ void CoutGreen(string s) {
 
 
 int main(int argc, char** argv) {
-
     HRESULT hres;
 
     // Initialize COM. ------------------------------------------
@@ -223,7 +222,7 @@ int main(int argc, char** argv) {
     // Obtain the initial locator to WMI -------------------------
     IWbemLocator* pLoc = InitializeWMILocator();
     // Connect to WMI through the IWbemLocator::ConnectServer method
-
+    // 
     // Connect to the root\cimv2 namespace with
     // the current user and obtain pointer pSvc
     // to make IWbemServices calls.
