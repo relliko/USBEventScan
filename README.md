@@ -5,4 +5,4 @@ Source needs to be run in Visual Studio with the Windows 10 SDK installed since 
 ![UI](https://relliko.github.io/images/USBEventScanner.png)
 
 # TODO
-Implement logging of additions or removals of USB devices.
+Implement logging of additions or removals of USB devices to a text file.
