@@ -2,57 +2,109 @@
 #include <iostream>
 #include <string>
 #include <sstream>
-using namespace std;
+#include <unordered_map>
 #include <comdef.h>
 #include <Wbemidl.h> // IWbemServices interface
 #include <windows.h>
 
+using namespace std;
+
 #pragma comment(lib, "wbemuuid.lib")
 
-
 unsigned int POLLING_RATE = 1000; // in ms 
+HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE); // Allows us to pick output colors
+short GREEN = 2;
+short RED   = 4;
+short WHITE = 15;
 
+// Stores metadata about a USB device on the system
+struct USBDevice_t {
+    wstring description; 
+    wstring id;
+};
 
 /**
-* Prints the names of all the USB devices resulting from a 
-* CIM_USBDevice query.
-* Returns the number of devices scanned.
+* Enumerates through all the USB devices resulting from a 
+* CIM_USBDevice query and adds them to a an unordered map.
+* Returns the number of devices resulting from the query.
 */
-int EnumQueryResults(IEnumWbemClassObject* pEnumerator, wstring* outData) {
+int EnumQueryResults(IEnumWbemClassObject* pEnumerator, 
+        unordered_map<wstring, USBDevice_t> umap, wstring* outData) {
+
     IWbemClassObject* pclsObj = NULL;
     ULONG uReturn = 0;
 
     short n = 0;
 
     while (pEnumerator) {
-        HRESULT hr = pEnumerator->Next(WBEM_INFINITE, 1,
-            &pclsObj, &uReturn);
+        HRESULT hr = pEnumerator->Next(WBEM_INFINITE, 1, &pclsObj, &uReturn);
 
-        if (0 == uReturn){
+        if (0 == uReturn) {
             break;
         }
 
         VARIANT vtPropID;
         VARIANT vtPropDescription;
 
-        // Get the value of the Name property
+        // Get the values of properties
         hr = pclsObj->Get(L"Description", 0, &vtPropDescription, 0, 0);
         hr = pclsObj->Get(L"DeviceID", 0, &vtPropID, 0, 0);
-        //wcout << "USB Device Name : " << vtProp.bstrVal << endl;
+
         wstringstream wss;
         wss << "Device Name: " << vtPropDescription.bstrVal << endl
             << "\t- ID: " << vtPropID.bstrVal << endl;
+        // Add to the map passed in to this function 
+        USBDevice_t device;
+        device.description = vtPropDescription.bstrVal;
+        device.id = vtPropID.bstrVal;
+        umap[device.id] = device;
         *outData += wss.str();
         VariantClear(&vtPropID);
         VariantClear(&vtPropDescription);
+        pclsObj->Release();
 
         n++;
-
-        pclsObj->Release();
     }
     pEnumerator->Release();
 
     return n;
+}
+
+// If failed, exits the program
+IEnumWbemClassObject* QueryUSBDevices(IWbemServices* pSvc, IWbemLocator* pLoc) {
+    HRESULT hres;
+    IEnumWbemClassObject* pEnumerator = NULL;
+    hres = pSvc->ExecQuery(
+        bstr_t("WQL"),
+        bstr_t("SELECT * FROM CIM_USBDevice"),
+        WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
+        NULL,
+        &pEnumerator);
+
+    if (FAILED(hres)) {
+        cout << "Query for USB devices failed."
+            << " Error code = 0x"
+            << hex << hres << endl;
+        pSvc->Release();
+        pLoc->Release();
+        CoUninitialize();
+        exit(EXIT_FAILURE);
+    }
+    return pEnumerator;
+}
+
+// Prints a string in red text
+void CoutRed(string s) {
+    SetConsoleTextAttribute(hConsole, RED);
+    cout << s << endl;
+    SetConsoleTextAttribute(hConsole, WHITE);
+}
+
+// Prints a string in green text
+void CoutGreen(string s) {
+    SetConsoleTextAttribute(hConsole, GREEN);
+    cout << s << endl;
+    SetConsoleTextAttribute(hConsole, WHITE);
 }
 
 
@@ -66,7 +118,7 @@ int main(int argc, char** argv) {
     if (FAILED(hres)) {
         cout << "Failed to initialize COM library. Error code = 0x"
             << hex << hres << endl;
-        return 1;                  // Program has failed.
+        return 1;
     }
 
     // Set general COM security levels --------------------------
@@ -105,7 +157,7 @@ int main(int argc, char** argv) {
             << " Err code = 0x"
             << hex << hres << endl;
         CoUninitialize();
-        return 1;                 // Program has failed.
+        return 1;
     }
 
     // Connect to WMI through the IWbemLocator::ConnectServer method
@@ -160,43 +212,35 @@ int main(int argc, char** argv) {
     }
 
     short numDevices = -1;
+    unsigned int totalChanges = 0; // number of additions or removals 
+    unordered_map<wstring, USBDevice_t> deviceMap; // The map of devices existing on the system
+
     while (1) {
         // Use the IWbemServices pointer to make requests of WMI ----
-        IEnumWbemClassObject* pEnumerator = NULL;
-        hres = pSvc->ExecQuery(
-            bstr_t("WQL"),
-            bstr_t("SELECT * FROM CIM_USBDevice"),
-            WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
-            NULL,
-            &pEnumerator);
+        IEnumWbemClassObject* pEnumerator = QueryUSBDevices(pSvc, pLoc);
 
-        if (FAILED(hres)) {
-            cout << "Query for USB devices failed."
-                << " Error code = 0x"
-                << hex << hres << endl;
-            pSvc->Release();
-            pLoc->Release();
-            CoUninitialize();
-            return 1;               // Program has failed.
-        }
-
+        unordered_map<wstring, USBDevice_t> tempMap;
         wstring outData;
 
-        // Print the data from the query
-        short res = EnumQueryResults(pEnumerator, &outData);
+        // Enumerate through the data from the query
+        short res = EnumQueryResults(pEnumerator, tempMap, &outData);
+        // TODO: Compare temp map and the device map to isolate changes 
 
         if (numDevices != res) {
+            system("CLS"); // clear command prompt to update it 
             if (numDevices < res && numDevices >= 0) {
-                cout << "Device plugged in." << endl;
+                totalChanges++;
+                CoutGreen("Device added.");
             } else if (numDevices > res && numDevices >= 0) {
-                cout << "Device unplugged." << endl;
-            }
-            else {
-                cout << "Scanning USB ports..." << endl;
+                totalChanges++;
+                CoutRed("Device removed.");
+            } else {
+                // This else only runs on first iteration of while loop
             }
             // device count changed, print the list
             wcout << outData << endl;
             cout << "Number of connected USB devices: " << res << endl;
+            cout << "Changes observed: " << totalChanges << endl;
             cout << "----------------------------------------" << endl << endl;
             cout << "Scanning USB ports..." << endl;
 
@@ -210,7 +254,6 @@ int main(int argc, char** argv) {
     // ========
     pSvc->Release();
     pLoc->Release();
-
     CoUninitialize();
 
     return 0;   // Program successfully completed.
