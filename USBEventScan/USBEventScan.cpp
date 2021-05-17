@@ -2,7 +2,9 @@
 #include <iostream>
 #include <string>
 #include <sstream>
-#include <unordered_map>
+#include <algorithm>
+#include <map>
+#include <vector>
 #include <comdef.h>
 #include <Wbemidl.h> // IWbemServices interface
 #include <windows.h>
@@ -11,25 +13,111 @@ using namespace std;
 
 #pragma comment(lib, "wbemuuid.lib")
 
-unsigned int POLLING_RATE = 250; // in ms 
+constexpr unsigned int POLLING_RATE = 250; // in ms 
+constexpr short GREEN  = 2;
+constexpr short RED    = 4;
+constexpr short WHITE  = 15;
+
 HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE); // Allows us to pick output colors
-short GREEN = 2;
-short RED   = 4;
-short WHITE = 15;
 
 // Stores metadata about a USB device on the system
 struct USBDevice_t {
-    wstring description; 
+    wstring description;
     wstring id;
 };
 
+// Function definitions
+vector<wstring> keySetDifference(map<wstring, USBDevice_t> m1, map<wstring, USBDevice_t> m2);
+void CoutRed(wstring s);
+void CoutGreen(wstring s);
+int InitializeCOM();
+IWbemLocator* InitializeWMILocator();
+IWbemServices* ConnectToWMI(IWbemLocator* pLoc);
+IEnumWbemClassObject* QueryUSBDevices(IWbemServices* pSvc, IWbemLocator* pLoc);
+int EnumQueryResults(IEnumWbemClassObject* pEnumerator, map<wstring, USBDevice_t>& umap,
+    wstring* outData);
+
+
+int main(int argc, char** argv) {
+    // Initialize COM. ------------------------------------------
+    InitializeCOM();
+    // Obtain the initial locator to WMI -------------------------
+    IWbemLocator* pLoc = InitializeWMILocator();
+    // Connect to WMI through the IWbemLocator::ConnectServer method
+    // 
+    // Connect to the root\cimv2 namespace with
+    // the current user and obtain pointer pSvc
+    // to make IWbemServices calls.
+    IWbemServices* pSvc = ConnectToWMI(pLoc);
+
+    short numDevices = -1;
+    unsigned int totalChanges = 0; // number of additions or removals 
+    map<wstring, USBDevice_t> deviceMap; // The map of devices existing on the system
+
+    // Main program loop
+    while (1) {
+        // Use the IWbemServices pointer to make requests of WMI ----
+        IEnumWbemClassObject* pEnumerator = QueryUSBDevices(pSvc, pLoc);
+
+        map<wstring, USBDevice_t> tempMap;
+        wstring outData;
+
+        // Enumerate through the data from the query
+        short res = EnumQueryResults(pEnumerator, tempMap, &outData);
+        // TODO: Compare temp map and the device map to isolate changes 
+
+
+        if (numDevices != res) {
+            system("CLS"); // clear command prompt to update it 
+
+            // Isolate the name of the device that changed
+            vector<wstring> diffVector = keySetDifference(deviceMap, tempMap);
+            
+            // device count changed, print the list
+            wcout << outData << endl;
+
+            if (numDevices < res && numDevices >= 0) {
+                totalChanges++;
+                wstring s = L"Device added: " + diffVector[0];
+                CoutGreen(s);
+            }
+            else if (numDevices > res && numDevices >= 0) {
+                totalChanges++;
+                wstring s = L"Device removed: " + diffVector[0];
+                CoutRed(s);
+            }
+            else {
+                // This else only runs on first iteration of while loop
+            }
+
+            cout << "Number of connected USB devices: " << res << endl;
+            cout << "Changes observed: " << totalChanges << endl;
+            cout << "----------------------------------------" << endl << endl;
+            cout << "Scanning USB ports..." << endl;
+
+            deviceMap = tempMap;
+            numDevices = res;
+        }
+
+        Sleep(POLLING_RATE); // minimize cpu usage
+    }
+
+    // Cleanup
+    // ========
+    pSvc->Release();
+    pLoc->Release();
+    CoUninitialize();
+
+    return 0;   // Program successfully completed.
+}
+
 /**
-* Enumerates through all the USB devices resulting from a 
-* CIM_USBDevice query and adds them to a an unordered map.
+* Enumerates through all the USB devices resulting from a
+* CIM_USBDevice query and adds them to a a map.
 * Returns the number of devices resulting from the query.
 */
-int EnumQueryResults(IEnumWbemClassObject* pEnumerator, 
-        unordered_map<wstring, USBDevice_t> umap, wstring* outData) {
+int EnumQueryResults(IEnumWbemClassObject* pEnumerator,
+    map<wstring, USBDevice_t>& umap, wstring* outData) {
 
     IWbemClassObject* pclsObj = NULL;
     ULONG uReturn = 0;
@@ -68,6 +156,39 @@ int EnumQueryResults(IEnumWbemClassObject* pEnumerator,
     pEnumerator->Release();
 
     return n;
+}
+
+// Isolates any wstring keys which do not exist in either m1 or m2 and returns them in a vector.
+vector<wstring> keySetDifference(map<wstring, USBDevice_t> m1,
+    map<wstring, USBDevice_t> m2) {
+    vector<wstring> diffVector;
+    vector<wstring> keysD;
+    keysD.reserve(m1.size());
+    vector<wstring> keysT;
+    keysT.reserve(m2.size());
+    for (auto& it : m1) {
+        keysD.push_back(it.first);
+    }
+    for (auto& it : m2) {
+        keysT.push_back(it.first);
+    }
+    set_symmetric_difference(keysD.begin(), keysD.end(),
+        keysT.begin(), keysT.end(), back_inserter(diffVector));
+    return diffVector;
+}
+
+// Prints a wstring in red text
+void CoutRed(wstring s) {
+    SetConsoleTextAttribute(hConsole, RED);
+    wcout << s << endl;
+    SetConsoleTextAttribute(hConsole, WHITE);
+}
+
+// Prints a wstring in green text
+void CoutGreen(wstring s) {
+    SetConsoleTextAttribute(hConsole, GREEN);
+    wcout << s << endl;
+    SetConsoleTextAttribute(hConsole, WHITE);
 }
 
 int InitializeCOM() {
@@ -197,83 +318,4 @@ IEnumWbemClassObject* QueryUSBDevices(IWbemServices* pSvc, IWbemLocator* pLoc) {
         exit(EXIT_FAILURE);
     }
     return pEnumerator;
-}
-
-// Prints a string in red text
-void CoutRed(string s) {
-    SetConsoleTextAttribute(hConsole, RED);
-    cout << s << endl;
-    SetConsoleTextAttribute(hConsole, WHITE);
-}
-
-// Prints a string in green text
-void CoutGreen(string s) {
-    SetConsoleTextAttribute(hConsole, GREEN);
-    cout << s << endl;
-    SetConsoleTextAttribute(hConsole, WHITE);
-}
-
-
-int main(int argc, char** argv) {
-    HRESULT hres;
-
-    // Initialize COM. ------------------------------------------
-    InitializeCOM();
-    // Obtain the initial locator to WMI -------------------------
-    IWbemLocator* pLoc = InitializeWMILocator();
-    // Connect to WMI through the IWbemLocator::ConnectServer method
-    // 
-    // Connect to the root\cimv2 namespace with
-    // the current user and obtain pointer pSvc
-    // to make IWbemServices calls.
-    IWbemServices* pSvc = ConnectToWMI(pLoc);
-
-    short numDevices = -1;
-    unsigned int totalChanges = 0; // number of additions or removals 
-    unordered_map<wstring, USBDevice_t> deviceMap; // The map of devices existing on the system
-
-    // Main program loop
-    while (1) {
-        // Use the IWbemServices pointer to make requests of WMI ----
-        IEnumWbemClassObject* pEnumerator = QueryUSBDevices(pSvc, pLoc);
-
-        unordered_map<wstring, USBDevice_t> tempMap;
-        wstring outData;
-
-        // Enumerate through the data from the query
-        short res = EnumQueryResults(pEnumerator, tempMap, &outData);
-        // TODO: Compare temp map and the device map to isolate changes 
-
-        if (numDevices != res) {
-            system("CLS"); // clear command prompt to update it 
-            if (numDevices < res && numDevices >= 0) {
-                totalChanges++;
-                CoutGreen("Device added.");
-            } else if (numDevices > res && numDevices >= 0) {
-                totalChanges++;
-                CoutRed("Device removed.");
-            } else {
-                // This else only runs on first iteration of while loop
-            }
-            // device count changed, print the list
-            wcout << outData << endl;
-            cout << "Number of connected USB devices: " << res << endl;
-            cout << "Changes observed: " << totalChanges << endl;
-            cout << "----------------------------------------" << endl << endl;
-            cout << "Scanning USB ports..." << endl;
-
-            deviceMap = tempMap;
-            numDevices = res;
-        }
-
-        Sleep(POLLING_RATE); // minimize cpu usage
-    }
-
-    // Cleanup
-    // ========
-    pSvc->Release();
-    pLoc->Release();
-    CoUninitialize();
-
-    return 0;   // Program successfully completed.
 }
